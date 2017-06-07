@@ -16,10 +16,14 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
+    private static final int PLAYERS = 2;
 
-    private static final HashSet<String> clientsLogins = new HashSet<String>();
+
+    private static Random r = new Random();
+
+    private static  HashSet<String> clientsLogins = new HashSet<String>();
     private static HashMap<Integer, int[]> clientsData = new HashMap<>();
-    private static final HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
+    private static  HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
     private static HashMap<Socket, Integer> clientSockets = new HashMap<>();
     private static final List<String> directionsBegin = Arrays.asList("S","N","E","W");
     private static final List<String> directionsMove = Arrays.asList("R","L","S");
@@ -32,20 +36,18 @@ public class Server {
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
     private static int[][] Board = new int[100][100];
-    private static long startTime;
-    private static long elapsedTime;
+
+
 
 
     public static void main(String[] args) throws Exception {
         System.out.println("The chat server is running.");
         try (ServerSocket listener = new ServerSocket(PORT)) {
-            while (clientsLogins.size() < 2) {
+            new Player(listener.accept(), 1).start();
+            new Player(listener.accept(), 2).start();
+            //        new Player(listener.accept(), 3).start();
 
-                new Player(listener.accept(), 1).start();
-                new Player(listener.accept(), 2).start();
-        //        new Player(listener.accept(), 3).start();
 
-            }
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -68,15 +70,12 @@ public class Server {
         public void run() {
             try {
 
-                // Create character streams for the socket.
                 in = new BufferedReader(new InputStreamReader(
                         socket.getInputStream()));
                 out = new PrintWriter(socket.getOutputStream(), true);
 
-                // Request a inMsg from this client.  Keep requesting until
-                // a inMsg is submitted that is not already used.  Note that
-                // checking for the existence of a inMsg and adding the inMsg
-                // must be done while locking the set of clientsLogins.
+
+                //CONNECT
 
                 out.println("CONNECT");
                 while(true) {
@@ -87,32 +86,31 @@ public class Server {
                         out.println(outMsg);
                     }
                     else{
-                    synchronized (clientsLogins) {
-                        if (inMsg.startsWith("LOGIN ")) {
-                            int[] coords = new int[2];
-                            //do zrobienia, zeby nie mogly byc te same koordy
-                            //coords[0] = ThreadLocalRandom.current().nextInt(2, 100);
-                            //coords[1] = ThreadLocalRandom.current().nextInt(2, 100);
-                            coords[0] = 1;
-                            coords[1] = 2;
-                            if (!clientsLogins.contains(loginpart[1])) {
-                                clientsLogins.add(loginpart[1]);
-                                clientsData.put(id, coords);
-                                outMsg = "OK";
-                                out.println(outMsg);
-                                writers.add(out);
-                                System.out.println(out);
-                                clientSockets.put(socket, id);
-                                break;
+                        //LOGIN
+                        synchronized (clientsLogins) {
+                            if (inMsg.startsWith("LOGIN ")) {
+                                int[] coords = new int[2];
+                                //do zrobienia, zeby nie mogly byc te same koordy
+                                coords[0] = r.nextInt(100) + 1;
+                                coords[1] = r.nextInt(100) + 1;
+                                if (!clientsLogins.contains(loginpart[1])) {
+                                    clientsLogins.add(loginpart[1]);
+                                    clientsData.put(id, coords);
+                                    outMsg = "OK";
+                                    out.println(outMsg);
+                                    writers.add(out);
+                                    System.out.println(out);
+                                    clientSockets.put(socket, id);
+                                    break;
+                                } else {
+                                    outMsg = "ERROR";
+                                    out.println(outMsg);
+                                }
                             } else {
                                 outMsg = "ERROR";
                                 out.println(outMsg);
                             }
-                        } else {
-                            outMsg = "ERROR";
-                            out.println(outMsg);
                         }
-                    }
 
                     }
                 }
@@ -121,7 +119,7 @@ public class Server {
 
                 lock.lock();
                 try {
-                    while (clientsLogins.size() < 2) {
+                    while (clientsLogins.size() < PLAYERS) {
                         counter.await();
                     }
                     counter.signal();
@@ -133,9 +131,9 @@ public class Server {
                     lock.unlock();
                 }
 
-
+                //START I PLAYERS
                 synchronized (lockobj) {
-                    if (clientsLogins.size() == 2 && !statusStatus) {
+                    if (clientsLogins.size() == PLAYERS && !statusStatus) {
                         sendLoginToAllTCP("START");
                         StringBuilder outBuffer = new StringBuilder();
                         outBuffer.append("PLAYERS");
@@ -148,7 +146,8 @@ public class Server {
                     }
                 }
 
-                if(clientsLogins.size() == 2) {
+                //BEGIN
+                if(clientsLogins.size() == PLAYERS) {
                     while (true) {
                         inMsg = in.readLine();
                         if(inMsg == null){
@@ -179,7 +178,7 @@ public class Server {
 
                 lock.lock();
                 try {
-                    while (beginCounter < 2) {
+                    while (beginCounter < PLAYERS) {
                         counter.await();
                     }
                     counter.signal();
@@ -191,63 +190,66 @@ public class Server {
                     lock.unlock();
                 }
 
+                //GAME
                 synchronized (lockobj) {
-                    if (beginCounter == 2 && !sendGameStatus) {
+                    if (beginCounter == PLAYERS && !sendGameStatus) {
                         outMsg = "GAME";
                         sendMesageToAll(outMsg);
                         sendGameStatus = true;
                     }
                 }
 
+                //GRA
                 socket.setSoTimeout(500);
                 inMsg = null;
                 int counterdisc = 0;
                 int lost = 0;
                 while(true){
-                        if(counterdisc == 20){
-                            break;
+                    if(counterdisc == 20){ // powinno byc 6, bo 6*500 = 3s
+                        break;
+                    }
+                    lost = updateBoard();
+                    if(socket.equals(getSocketById(lost))){
+                        outMsg = "LOST";
+                        out.println(outMsg);
+                        break;
+                    }
+                    synchronized (lockobj) {
+
+                        if(!sendBoardStatus) {
+                            sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
+                            sendBoardStatus = true;
                         }
-                        lost = updateBoard();
-                        if(socket.equals(getSocketById(lost))){
-                            outMsg = "LOST";
+                    }
+                    try {
+                        clientBeginMove(clientSockets.get(socket),clientsBeginDirections.get(clientSockets.get(socket)));
+                        inMsg = in.readLine();
+                    }
+                    catch (SocketTimeoutException e){
+                        counterdisc++;
+
+                    }
+                    if(inMsg != null) {
+                        counterdisc = 0;
+                        if(inMsg.startsWith("MOVE ")){
+                            String movepart[] = inMsg.split(" ");
+                            if(directionsMove.contains(movepart[1])){
+///TUTAJ ZACZĄĆ!!!
+                            }
+                            else{
+                                outMsg = "ERROR";
+                                out.println(outMsg);
+                            }
+                        }
+                        else{
+                            outMsg = "ERROR";
                             out.println(outMsg);
-                            break;
                         }
-                        synchronized (lockobj) {
-                            if(!sendBoardStatus) {
-                                sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
-                                sendBoardStatus = true;
-                            }
-                        }
-                            try {
-                                clientBeginMove(clientSockets.get(socket),clientsBeginDirections.get(clientSockets.get(socket)));
-                                inMsg = in.readLine();
-                            }
-                            catch (SocketTimeoutException e){
-                                counterdisc++;
 
-                            }
-                            if(inMsg != null) {
-                                counterdisc = 0;
-                                if(inMsg.startsWith("MOVE ")){
-                                    String movepart[] = inMsg.split(" ");
-                                    if(directionsMove.contains(movepart[1])){
-
-                                    }
-                                    else{
-                                        outMsg = "ERROR";
-                                        out.println(outMsg);
-                                    }
-                                }
-                                else{
-                                    outMsg = "ERROR";
-                                    out.println(outMsg);
-                                }
-
-                                System.out.println(inMsg);
-                                inMsg = null;
-                            }
-                            sendBoardStatus = false;
+                        System.out.println(inMsg);
+                        inMsg = null;
+                    }
+                    sendBoardStatus = false;
 
 
                 }
@@ -276,6 +278,7 @@ public class Server {
                 try {
                     assert out != null;
                     out.println("DISCONNECT");
+                    clientsData.remove(id);
                     socket.close();
                 } catch (IOException | NullPointerException e) {e.printStackTrace();
                 }
@@ -309,6 +312,9 @@ public class Server {
             int id = entry.getKey();
             int[] coords = entry.getValue();
             if(coords[0]==0 || coords[1]==0){
+                lost = id;
+            }
+            else if((Board[coords[0] - 1][coords[1] - 1])!= 0 && (Board[coords[0] - 1][coords[1] - 1] != id)){
                 lost = id;
             }
             else {
