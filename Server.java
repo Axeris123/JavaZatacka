@@ -29,6 +29,7 @@ public class Server {
     private static final List<String> directionsMove = Arrays.asList("R","L","S");
     private static HashMap<Integer, String> clientsBeginDirections = new HashMap<>();
     private static int beginCounter = 0;
+    private static int lostCounter = 0;
     private static boolean statusStatus = false;
     private static boolean sendGameStatus = false;
     private static boolean sendBoardStatus = false;
@@ -204,56 +205,80 @@ public class Server {
                 inMsg = null;
                 int counterdisc = 0;
                 int lost = 0;
-                while(true){
-                    if(counterdisc == 20){ // powinno byc 6, bo 6*500 = 3s
+                while(true) {
+                    System.out.println(lostCounter);
+                   if(lostCounter == PLAYERS - 1)
+                    {
+                        lostCounter++;
+                        outMsg = "WIN";
+                        out.println(outMsg);
+                        break;
+                    }
+                    if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
                         break;
                     }
                     lost = updateBoard();
-                    if(socket.equals(getSocketById(lost))){
+                    if (socket.equals(getSocketById(lost))) {
+                        lostCounter++;
                         outMsg = "LOST";
                         out.println(outMsg);
                         break;
                     }
+                    lost = updateBoard();
                     synchronized (lockobj) {
-
-                        if(!sendBoardStatus) {
+                        if (!sendBoardStatus) {
                             sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
                             sendBoardStatus = true;
                         }
                     }
-                    try {
-                        clientBeginMove(clientSockets.get(socket),clientsBeginDirections.get(clientSockets.get(socket)));
-                        inMsg = in.readLine();
-                    }
-                    catch (SocketTimeoutException e){
-                        counterdisc++;
 
-                    }
-                    if(inMsg != null) {
-                        counterdisc = 0;
-                        if(inMsg.startsWith("MOVE ")){
-                            String movepart[] = inMsg.split(" ");
-                            if(directionsMove.contains(movepart[1])){
-///TUTAJ ZACZĄĆ!!!
-                            }
-                            else{
+                        try {
+                            clientBeginMove(clientSockets.get(socket), clientsBeginDirections.get(clientSockets.get(socket)));
+                            inMsg = in.readLine();
+                        } catch (SocketTimeoutException e) {
+                            counterdisc++;
+
+                        }
+                        if (inMsg != null) {
+                            counterdisc = 0;
+                            if (inMsg.startsWith("MOVE ")) {
+                                String movepart[] = inMsg.split(" ");
+                                if (directionsMove.contains(movepart[1])) {
+                                    changeDirection(movepart[1], id);
+                                    outMsg = "OK";
+                                    out.println(outMsg);
+                                } else {
+                                    outMsg = "ERROR";
+                                    out.println(outMsg);
+                                }
+                            } else {
                                 outMsg = "ERROR";
                                 out.println(outMsg);
                             }
+
+                            System.out.println(inMsg);
+                            inMsg = null;
                         }
-                        else{
-                            outMsg = "ERROR";
-                            out.println(outMsg);
-                        }
-
-                        System.out.println(inMsg);
-                        inMsg = null;
-                    }
-                    sendBoardStatus = false;
-
-
+                        sendBoardStatus = false;
                 }
 
+                lock.lock();
+                try {
+                    while (lostCounter < PLAYERS) {
+                        counter.await();
+                    }
+                    counter.signal();
+                }
+                catch (InterruptedException e){
+                    e.printStackTrace();
+                }
+                finally {
+                    lock.unlock();
+                }
+
+                synchronized (lockobj){
+                    
+                }
 
 /*              while (true) {
                     String input = in.readLine();
@@ -286,6 +311,52 @@ public class Server {
         }
     }
 
+
+    public static void changeDirection(String direction, int id){
+        String changedDirection = clientsBeginDirections.get(id);
+        switch (direction) {
+            case "R":
+                switch (changedDirection) {
+                    case "S":
+                    case "N":
+                        changedDirection = "E";
+                        break;
+                    case "E":
+                        changedDirection = "S";
+                        break;
+                    case "W":
+                        changedDirection = "N";
+                        break;
+                }
+                break;
+            case "L":
+                switch (changedDirection) {
+                    case "S":
+                    case "N":
+                        changedDirection = "W";
+                        break;
+                    case "E":
+                        changedDirection = "N";
+                        break;
+                    case "W":
+                        changedDirection = "S";
+                        break;
+                }
+                break;
+            case "S":
+                changedDirection = changedDirection;
+                break;
+        }
+
+        clientsBeginDirections.put(id,changedDirection);
+    }
+
+
+
+    public static void lockCounter(int count){
+
+    }
+
     public static void clientBeginMove(int id, String direction){
         int[] coords = clientsData.get(id);
         switch (direction) {
@@ -311,7 +382,8 @@ public class Server {
         for (Map.Entry<Integer, int[]> entry : clientsData.entrySet()) {
             int id = entry.getKey();
             int[] coords = entry.getValue();
-            if(coords[0]==0 || coords[1]==0){
+            System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
+            if(coords[0]==0 || coords[1]==0 || coords[0] == 101 || coords[1] == 101){
                 lost = id;
             }
             else if((Board[coords[0] - 1][coords[1] - 1])!= 0 && (Board[coords[0] - 1][coords[1] - 1] != id)){
