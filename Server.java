@@ -16,23 +16,27 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 2;
+    private static final int PLAYERS = 5;
 
 
     private static Random r = new Random();
 
-    private static  HashSet<String> clientsLogins = new HashSet<String>();
+    private static HashMap<Integer, String> clientsLogins = new HashMap<>();
     private static HashMap<Integer, int[]> clientsData = new HashMap<>();
-    private static  HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
+    private static HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
     private static HashMap<Socket, Integer> clientSockets = new HashMap<>();
+    private static HashMap<Integer, ArrayList<Integer>> clientsPositions = new HashMap<>();
     private static final List<String> directionsBegin = Arrays.asList("S","N","E","W");
     private static final List<String> directionsMove = Arrays.asList("R","L","S");
     private static HashMap<Integer, String> clientsBeginDirections = new HashMap<>();
     private static int beginCounter = 0;
     private static int lostCounter = 0;
+    private static int ROUNDS = 1;
+    private static int position = PLAYERS ;
     private static boolean statusStatus = false;
     private static boolean sendGameStatus = false;
     private static boolean sendBoardStatus = false;
+    private static boolean sendRoundStatus = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
@@ -46,7 +50,9 @@ public class Server {
         try (ServerSocket listener = new ServerSocket(PORT)) {
             new Player(listener.accept(), 1).start();
             new Player(listener.accept(), 2).start();
-            //        new Player(listener.accept(), 3).start();
+            new Player(listener.accept(), 3).start();
+            new Player(listener.accept(), 4).start();
+            new Player(listener.accept(), 5).start();
 
 
 
@@ -59,6 +65,7 @@ public class Server {
         private String inMsg;
         private String outMsg;
         private Socket socket;
+        private ArrayList<Integer> positions = new ArrayList<>();
         private int id;
         private BufferedReader in;
         private PrintWriter out;
@@ -94,13 +101,12 @@ public class Server {
                                 //do zrobienia, zeby nie mogly byc te same koordy
                                 coords[0] = r.nextInt(100) + 1;
                                 coords[1] = r.nextInt(100) + 1;
-                                if (!clientsLogins.contains(loginpart[1])) {
-                                    clientsLogins.add(loginpart[1]);
+                                if (!clientsLogins.values().contains(loginpart[1])) {
+                                    clientsLogins.put(id,loginpart[1]);
                                     clientsData.put(id, coords);
                                     outMsg = "OK";
                                     out.println(outMsg);
                                     writers.add(out);
-                                    System.out.println(out);
                                     clientSockets.put(socket, id);
                                     break;
                                 } else {
@@ -199,38 +205,41 @@ public class Server {
                         sendGameStatus = true;
                     }
                 }
-
-                //GRA
                 socket.setSoTimeout(500);
-                inMsg = null;
-                int counterdisc = 0;
-                int lost = 0;
-                while(true) {
-                    System.out.println(lostCounter);
-                   if(lostCounter == PLAYERS - 1)
-                    {
-                        lostCounter++;
-                        outMsg = "WIN";
-                        out.println(outMsg);
-                        break;
-                    }
-                    if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
-                        break;
-                    }
-                    lost = updateBoard();
-                    if (socket.equals(getSocketById(lost))) {
-                        lostCounter++;
-                        outMsg = "LOST";
-                        out.println(outMsg);
-                        break;
-                    }
-                    lost = updateBoard();
-                    synchronized (lockobj) {
-                        if (!sendBoardStatus) {
-                            sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
-                            sendBoardStatus = true;
+                //GRA
+                while(ROUNDS <=5 ) {
+                    inMsg = null;
+                    int counterdisc = 0;
+                    int lost = 0;
+                    while (true) {
+                        System.out.println(lostCounter);
+                        if (lostCounter == PLAYERS - 1) {
+                            lostCounter++;
+                            outMsg = "WIN";
+                            positions.add(1);
+                            clientsPositions.put(id,positions);
+                            out.println(outMsg);
+                            break;
                         }
-                    }
+                        if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
+                            break;
+                        }
+                        lost = updateBoard();
+                        if (socket.equals(getSocketById(lost))) {
+                            lostCounter++;
+                            outMsg = "LOST " + position;
+                            positions.add(position);
+                            clientsPositions.put(id,positions);
+                            position--;
+                            out.println(outMsg);
+                            break;
+                        }
+                        synchronized (lockobj) {
+                            if (!sendBoardStatus && id == 1) {
+                                sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
+                                sendBoardStatus = true;
+                            }
+                        }
 
                         try {
                             clientBeginMove(clientSockets.get(socket), clientsBeginDirections.get(clientSockets.get(socket)));
@@ -259,26 +268,56 @@ public class Server {
                             System.out.println(inMsg);
                             inMsg = null;
                         }
-                        sendBoardStatus = false;
-                }
+                        if (id == 1) {
+                            sendBoardStatus = false;
+                        }
 
-                lock.lock();
-                try {
-                    while (lostCounter < PLAYERS) {
-                        counter.await();
                     }
-                    counter.signal();
-                }
-                catch (InterruptedException e){
-                    e.printStackTrace();
-                }
-                finally {
-                    lock.unlock();
+
+
+                    lock.lock();
+                    try {
+                        while (lostCounter < PLAYERS) {
+                            counter.await();
+                        }
+                        counter.signal();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    } finally {
+                        lock.unlock();
+                    }
+
+                    if(ROUNDS == 5){
+                        sendRanking();
+                        break;
+                    }
+                        synchronized (lockobj) {
+                                if (lostCounter == PLAYERS && !sendRoundStatus) {
+                                    outMsg = "ROUND " + (ROUNDS + 1);
+                                    sendMesageToAll(outMsg);
+                                    randomizeDirections();
+                                    StringBuilder outBuffer = new StringBuilder();
+                                    outBuffer.append("PLAYERS");
+                                    for (Map.Entry<Integer, int[]> entry : clientsData.entrySet()) {
+                                        outBuffer.append(" ").append(entry.getValue()[0]).append(" ").append(entry.getValue()[1]);
+                                    }
+                                    sendMesageToAll(outBuffer.toString());
+                                    lostCounter = 0;
+                                    Board = new int[100][100];
+                                    position = PLAYERS;
+                                    sendRoundStatus = true;
+                                    ROUNDS++;
+                                }
+                        }
+                        sendRoundStatus = false;
+
+
                 }
 
-                synchronized (lockobj){
+/*                synchronized (lockobj){
+                    sendMesageToAll("TEST");
                     
-                }
+                }*/
 
 /*              while (true) {
                     String input = in.readLine();
@@ -312,6 +351,41 @@ public class Server {
     }
 
 
+    private static void sendRanking(){
+        TreeMap<String, Integer> finalpositions = new TreeMap<>();
+        String login;
+        int sum;
+        ArrayList<Integer> positions;
+        for (Map.Entry<Integer, ArrayList<Integer>> entry : clientsPositions.entrySet()){
+            sum = 0;
+            login = clientsLogins.get(entry.getKey());
+            positions = entry.getValue();
+            for(Integer position : positions){
+                sum+=position;
+            }
+            finalpositions.put(login , sum);
+        }
+
+        for(Map.Entry<String,Integer> entry : finalpositions.entrySet()) {
+            String key = entry.getKey();
+            Integer value = entry.getValue();
+
+            System.out.println(key + " => " + value);
+        }
+
+
+
+    }
+
+    private static void randomizeDirections(){
+        for (int id : clientsData.keySet()) {
+            int[] coords = new int[2];
+            coords[0] = r.nextInt(100) + 1;
+            coords[1] = r.nextInt(100) + 1;
+            clientsData.put(id,coords);
+        }
+
+    }
     public static void changeDirection(String direction, int id){
         String changedDirection = clientsBeginDirections.get(id);
         switch (direction) {
@@ -351,11 +425,6 @@ public class Server {
         clientsBeginDirections.put(id,changedDirection);
     }
 
-
-
-    public static void lockCounter(int count){
-
-    }
 
     public static void clientBeginMove(int id, String direction){
         int[] coords = clientsData.get(id);
