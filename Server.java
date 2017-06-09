@@ -8,7 +8,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -16,7 +16,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 2;
+    private static final int PLAYERS = 8;
 
 
     private static Random r = new Random();
@@ -24,6 +24,7 @@ public class Server {
     private static HashMap<Integer, String> clientsLogins = new HashMap<>();
     private static HashMap<Integer, int[]> clientsData = new HashMap<>();
     private static HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
+    private static volatile ConcurrentHashMap<Integer, PrintWriter> activePlayers = new ConcurrentHashMap<>();
     private static HashMap<Socket, Integer> clientSockets = new HashMap<>();
     private static HashMap<Integer, ArrayList<Integer>> clientsPositions = new HashMap<>();
     private static final List<String> directionsBegin = Arrays.asList("S","N","E","W");
@@ -38,6 +39,7 @@ public class Server {
     private static boolean sendBoardStatus = false;
     private static boolean sendRoundStatus = false;
     private static boolean sendRankingStatus = false;
+    private static boolean setBoardSender = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
@@ -51,9 +53,12 @@ public class Server {
         try (ServerSocket listener = new ServerSocket(PORT)) {
             new Player(listener.accept(), 1).start();
             new Player(listener.accept(), 2).start();
-            //new Player(listener.accept(), 3).start();
-            //new Player(listener.accept(), 4).start();
-            //new Player(listener.accept(), 5).start();
+            new Player(listener.accept(), 3).start();
+            new Player(listener.accept(), 4).start();
+            new Player(listener.accept(), 5).start();
+/*            new Player(listener.accept(), 6).start();
+            new Player(listener.accept(), 7).start();
+            new Player(listener.accept(), 8).start();*/
 
 
         } catch (IOException e) {
@@ -96,9 +101,8 @@ public class Server {
                     else{
                         //LOGIN
                         synchronized (clientsLogins) {
-                            if (inMsg.startsWith("LOGIN ")) {
+                            if (inMsg.startsWith("LOGIN ") && (inMsg.length() > 6)) {
                                 int[] coords = new int[2];
-                                //do zrobienia, zeby nie mogly byc te same koordy
                                 coords[0] = r.nextInt(100) + 1;
                                 coords[1] = r.nextInt(100) + 1;
                                 if (!clientsLogins.values().contains(loginpart[1])) {
@@ -122,14 +126,14 @@ public class Server {
                     }
                 }
 
-                outMsg = "START";
+              //  outMsg = "START";
 
                 lock.lock();
                 try {
                     while (clientsLogins.size() < PLAYERS) {
                         counter.await();
                     }
-                    counter.signal();
+                    counter.signalAll();
                 }
                 catch (InterruptedException e){
                     e.printStackTrace();
@@ -163,7 +167,7 @@ public class Server {
                         }
                         else {
                             String beginpart[] = inMsg.split(" ");
-                            if (beginpart[0].equals("BEGIN")) {
+                            if (inMsg.startsWith("BEGIN ") && (inMsg.length() > 6)) {
                                 if (directionsBegin.contains(beginpart[1])) {
                                     clientsBeginDirections.put(clientSockets.get(socket), beginpart[1]);
                                     outMsg = "OK";
@@ -182,13 +186,13 @@ public class Server {
                     }
                 }
 
-
+                System.out.println("BEFORE LOCK FIRST BEGIN" + id);
                 lock.lock();
                 try {
                     while (beginCounter < PLAYERS) {
                         counter.await();
                     }
-                    counter.signal();
+                    counter.signalAll();
                 }
                 catch (InterruptedException e){
                     e.printStackTrace();
@@ -197,50 +201,77 @@ public class Server {
                     lock.unlock();
                 }
 
+                System.out.println("AFTER LOCK FIRST BEGIN" + id);
+
+
                 //GAME
                 synchronized (lockobj) {
                     if (beginCounter == PLAYERS && !sendGameStatus) {
                         outMsg = "GAME";
                         sendMesageToAll(outMsg);
+                        beginCounter = 0;
                         sendGameStatus = true;
                     }
                 }
 
 
 
-                socket.setSoTimeout(500);
                 //GRA
-                while(ROUNDS <=5 ) {
+
+                 while(ROUNDS <=5 ) {
+                    socket.setSoTimeout(500);
+                    synchronized (lockobj){
+                        activePlayers.put(id, out);
+                    }
+
+                    synchronized (lockobj) {
+                        for (Integer id : activePlayers.keySet()) {
+                            System.out.println("ACTIVE " + id);
+                        }
+                    }
+
                     inMsg = null;
                     int counterdisc = 0;
                     int lost;
                     while (true) {
 
-                         System.out.println(lostCounter);
+                        int sendBoardID = 0;
+                        PrintWriter testWriter = activePlayers.get(id);
+                        synchronized (lockobj) {
+                            if (testWriter != null && !setBoardSender) {
+                                sendBoardID = id;
+                                setBoardSender = true;
+                            }
+                        }
+                        // System.out.println(lostCounter);
                         if (lostCounter == PLAYERS - 1) {
                             lostCounter++;
                             outMsg = "WIN";
                             positions.add(1);
                             clientsPositions.put(id,positions);
+                            activePlayers.remove(id);
                             out.println(outMsg);
                             break;
                         }
                         if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
                             break;
                         }
-                        lost = updateBoard();
+                        synchronized (lockobj) {
+                            lost = updateBoard();
+                        }
                         if (socket.equals(getSocketById(lost))) {
                             lostCounter++;
                             outMsg = "LOST " + position;
                             positions.add(position);
                             clientsPositions.put(id,positions);
+                            activePlayers.remove(id);
                             position--;
                             out.println(outMsg);
                             break;
                         }
                         synchronized (lockobj) {
-                            if (!sendBoardStatus && id == 1) {
-                                sendMesageToAll("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
+                            if (!sendBoardStatus && id == sendBoardID) {
+                                sendBoardToActiveTCP("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
                                 sendBoardStatus = true;
                             }
                         }
@@ -272,19 +303,19 @@ public class Server {
                             System.out.println(inMsg);
                             inMsg = null;
                         }
-                        if (id == 1) {
+                        if (id == sendBoardID) {
                             sendBoardStatus = false;
+                            setBoardSender = false;
                         }
 
                     }
-
 
                     lock.lock();
                     try {
                         while (lostCounter < PLAYERS) {
                             counter.await();
                         }
-                        counter.signal();
+                        counter.signalAll();
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     } finally {
@@ -294,6 +325,7 @@ public class Server {
                     if(ROUNDS == 5){
                         break;
                     }
+
 
 
                         synchronized (lockobj) {
@@ -311,9 +343,57 @@ public class Server {
                                     Board = new int[100][100];
                                     position = PLAYERS;
                                     sendRoundStatus = true;
+                                    setBoardSender = false;
                                     ROUNDS++;
+                                    activePlayers = new ConcurrentHashMap<>();
                                 }
                         }
+
+                    socket.setSoTimeout(0);
+                     beginCounter = 0;
+                        while (true) {
+                            inMsg = in.readLine();
+                            if(inMsg == null){
+                                outMsg = "ERROR";
+                                out.println(outMsg);
+                            }
+                            else {
+                                String beginpart[] = inMsg.split(" ");
+                                if (inMsg.startsWith("BEGIN ") && (inMsg.length() > 6)) {
+                                    if (directionsBegin.contains(beginpart[1])) {
+                                        clientsBeginDirections.put(clientSockets.get(socket), beginpart[1]);
+                                        outMsg = "OK";
+                                        out.println(outMsg);
+                                        beginCounter++;
+                                        break;
+                                    } else {
+                                        outMsg = "ERROR";
+                                        out.println(outMsg);
+                                    }
+                                } else {
+                                    outMsg = "ERROR";
+                                    out.println(outMsg);
+                                }
+                            }
+                        }
+                        System.out.println("BEFORE LOCK " + id);
+
+                    lock.lock();
+                    try {
+                        while (beginCounter < PLAYERS) {
+                            counter.await();
+                        }
+                        counter.signalAll();
+                    }
+                    catch (InterruptedException e){
+                        e.printStackTrace();
+                    }
+                    finally {
+                        lock.unlock();
+                    }
+
+                     System.out.println("AFTER LOCK " + id);
+
                         sendRoundStatus = false;
 
 
@@ -366,7 +446,8 @@ public class Server {
 
 
     private static String getRanking(){
-        TreeMap<String, Integer> finalpositions = new TreeMap<>();
+        HashMap<String, Integer> map = new HashMap<String, Integer>();
+
         String login;
         int sum;
         ArrayList<Integer> positions;
@@ -380,8 +461,13 @@ public class Server {
             for(Integer position : positions){
                 sum+=position;
             }
-            finalpositions.put(login , sum);
+            map.put(login , sum);
         }
+
+        Comparator<String> comparator = new ValueComparator<String, Integer>(map);
+        TreeMap<String, Integer> finalpositions = new TreeMap<String, Integer>(comparator);
+        finalpositions.putAll(map);
+
 
         outBuffer.append("ENDGAME ");
 
@@ -389,7 +475,7 @@ public class Server {
             String key = entry.getKey();
             Integer value = entry.getValue();
 
-            outBuffer.append(key).append(" ");
+            outBuffer.append(key).append(" ").append(value).append(" ");
         }
         return outBuffer.toString();
 
@@ -468,20 +554,23 @@ public class Server {
 
     public static int updateBoard(){
         int lost = 0;
-        for (Map.Entry<Integer, int[]> entry : clientsData.entrySet()) {
-            int id = entry.getKey();
-            int[] coords = entry.getValue();
-            System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
-            if(coords[0] < 1 || coords[1]< 1 || coords[0] > 100 || coords[1] > 100){
-                lost = id;
+            for (Map.Entry<Integer, int[]> entry : clientsData.entrySet()) {
+                for (Integer activeID : activePlayers.keySet()) {
+                    int id = entry.getKey();
+                    int[] coords = entry.getValue();
+                    if (activeID == id) {
+                        System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
+                        if (coords[0] < 1 || coords[1] < 1 || coords[0] > 100 || coords[1] > 100) {
+                            lost = id;
+                        } else if ((Board[coords[0] - 1][coords[1] - 1]) != 0 && (Board[coords[0] - 1][coords[1] - 1] != id)) {
+                            lost = id;
+                        } else {
+                            Board[coords[0] - 1][coords[1] - 1] = id;
+                        }
+                    }
+                }
             }
-            else if((Board[coords[0] - 1][coords[1] - 1])!= 0 && (Board[coords[0] - 1][coords[1] - 1] != id)){
-                lost = id;
-            }
-            else {
-                Board[coords[0] - 1][coords[1] - 1] = id;
-            }
-        }
+
         return lost;
     }
 
@@ -514,9 +603,32 @@ public class Server {
         }
     }
 
+
+    public static void sendBoardToActiveTCP(String message) {
+        for(PrintWriter writer : activePlayers.values()){
+            writer.println(message);
+        }
+    }
+
     private static void sendMesageToAll(String message){
         for (PrintWriter writer : writers) {
             writer.println(message);
         }
+    }
+
+
+}
+
+class ValueComparator<K, V extends Comparable<V>> implements Comparator<K>{
+
+    HashMap<K, V> map = new HashMap<K, V>();
+
+    public ValueComparator(HashMap<K, V> map){
+        this.map.putAll(map);
+    }
+
+    @Override
+    public int compare(K s1, K s2) {
+        return map.get(s1).compareTo(map.get(s2));
     }
 }
