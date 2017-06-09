@@ -16,7 +16,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 5;
+    private static final int PLAYERS = 2;
 
 
     private static Random r = new Random();
@@ -37,6 +37,7 @@ public class Server {
     private static boolean sendGameStatus = false;
     private static boolean sendBoardStatus = false;
     private static boolean sendRoundStatus = false;
+    private static boolean sendRankingStatus = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
@@ -50,10 +51,9 @@ public class Server {
         try (ServerSocket listener = new ServerSocket(PORT)) {
             new Player(listener.accept(), 1).start();
             new Player(listener.accept(), 2).start();
-            new Player(listener.accept(), 3).start();
-            new Player(listener.accept(), 4).start();
-            new Player(listener.accept(), 5).start();
-
+            //new Player(listener.accept(), 3).start();
+            //new Player(listener.accept(), 4).start();
+            //new Player(listener.accept(), 5).start();
 
 
         } catch (IOException e) {
@@ -205,14 +205,18 @@ public class Server {
                         sendGameStatus = true;
                     }
                 }
+
+
+
                 socket.setSoTimeout(500);
                 //GRA
                 while(ROUNDS <=5 ) {
                     inMsg = null;
                     int counterdisc = 0;
-                    int lost = 0;
+                    int lost;
                     while (true) {
-                        System.out.println(lostCounter);
+
+                         System.out.println(lostCounter);
                         if (lostCounter == PLAYERS - 1) {
                             lostCounter++;
                             outMsg = "WIN";
@@ -288,9 +292,10 @@ public class Server {
                     }
 
                     if(ROUNDS == 5){
-                        sendRanking();
                         break;
                     }
+
+
                         synchronized (lockobj) {
                                 if (lostCounter == PLAYERS && !sendRoundStatus) {
                                     outMsg = "ROUND " + (ROUNDS + 1);
@@ -314,9 +319,18 @@ public class Server {
 
                 }
 
+
+                synchronized (lockobj){
+                    if(!sendRankingStatus) {
+                        String ranking = getRanking();
+                        sendMesageToAll(ranking);
+                        sendRankingStatus = true;
+                    }
+                }
+
 /*                synchronized (lockobj){
                     sendMesageToAll("TEST");
-                    
+
                 }*/
 
 /*              while (true) {
@@ -351,11 +365,14 @@ public class Server {
     }
 
 
-    private static void sendRanking(){
+    private static String getRanking(){
         TreeMap<String, Integer> finalpositions = new TreeMap<>();
         String login;
         int sum;
         ArrayList<Integer> positions;
+
+        StringBuilder outBuffer = new StringBuilder();
+
         for (Map.Entry<Integer, ArrayList<Integer>> entry : clientsPositions.entrySet()){
             sum = 0;
             login = clientsLogins.get(entry.getKey());
@@ -366,12 +383,15 @@ public class Server {
             finalpositions.put(login , sum);
         }
 
+        outBuffer.append("ENDGAME ");
+
         for(Map.Entry<String,Integer> entry : finalpositions.entrySet()) {
             String key = entry.getKey();
             Integer value = entry.getValue();
 
-            System.out.println(key + " => " + value);
+            outBuffer.append(key).append(" ");
         }
+        return outBuffer.toString();
 
 
 
@@ -452,7 +472,7 @@ public class Server {
             int id = entry.getKey();
             int[] coords = entry.getValue();
             System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
-            if(coords[0]==0 || coords[1]==0 || coords[0] == 101 || coords[1] == 101){
+            if(coords[0] < 1 || coords[1]< 1 || coords[0] > 100 || coords[1] > 100){
                 lost = id;
             }
             else if((Board[coords[0] - 1][coords[1] - 1])!= 0 && (Board[coords[0] - 1][coords[1] - 1] != id)){
