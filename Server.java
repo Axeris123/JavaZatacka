@@ -8,7 +8,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.*;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -16,7 +18,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 5;
+    private static final int PLAYERS = 12;
 
 
     private static Random r = new Random();
@@ -32,8 +34,10 @@ public class Server {
     private static HashMap<Integer, String> clientsBeginDirections = new HashMap<>();
     private static int beginCounter = 0;
     private static int lostCounter = 0;
+    private static HashSet<Integer> lostArr = new HashSet<>();
     private static int ROUNDS = 1;
-    private static int position = PLAYERS ;
+    private static int position = PLAYERS;
+    private static int arrSizeBeforeRemoval = 0;
     private static int sendBoardID;
     private static boolean statusStatus = false;
     private static boolean sendGameStatus = false;
@@ -42,10 +46,12 @@ public class Server {
     private static boolean sendRankingStatus = false;
     private static boolean setBoardSender = false;
     private static boolean increaseRoundsVar = false;
+    private static boolean editPosition = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
     private static int[][] Board = new int[100][100];
+    private static CyclicBarrier barrier = new CyclicBarrier(PLAYERS);
 
 
 
@@ -229,38 +235,21 @@ public class Server {
 
                     inMsg = null;
                     int counterdisc = 0;
-                    int lost;
-                    while (true) {
 
-                        // System.out.println(lostCounter);
-                        if (lostCounter == PLAYERS - 1) {
-                            lostCounter++;
-                            outMsg = "WIN";
-                            positions.add(1);
-                            clientsPositions.put(id,positions);
-                            activePlayers.remove(id);
-                            out.println(outMsg);
-                            break;
-                        }
-                        if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
-                            break;
-                        }
-                        synchronized (lockobj) {
-                            lost = updateBoard();
-                        }
-                        if (socket.equals(getSocketById(lost))) {
-                            lostCounter++;
-                            outMsg = "LOST " + position;
-                            positions.add(position);
-                            clientsPositions.put(id,positions);
-                            activePlayers.remove(id);
-                            if(id == sendBoardID){
-                                setBoardSender = false;
-                            }
-                            position--;
-                            out.println(outMsg);
-                            break;
-                        }
+
+                     lock.lock();
+                     try {
+                         while (activePlayers.size() != PLAYERS) {
+                             counter.await();
+                         }
+                         counter.signal();
+                     } catch (InterruptedException e) {
+                         e.printStackTrace();
+                     } finally {
+                         lock.unlock();
+                     }
+
+                    while (true) {
                         PrintWriter testWriter = activePlayers.get(id);
                         synchronized (lockobj) {
                             if (testWriter != null && !setBoardSender) {
@@ -268,6 +257,21 @@ public class Server {
                                 setBoardSender = true;
                             }
                         }
+
+                        if (activePlayers.size() == 1) {
+                            outMsg = "WIN";
+                            positions.add(1);
+                            clientsPositions.put(id,positions);
+                            activePlayers.remove(id);
+                            out.println(outMsg);
+                            lostCounter = PLAYERS;
+                            break;
+                        }
+                        if (counterdisc == 20000) { // powinno byc 6, bo 6*500 = 3s
+                            break;
+                        }
+
+
                         synchronized (lockobj) {
                             if (!sendBoardStatus && id == sendBoardID) {
                                 sendBoardToActiveTCP(id + " BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
@@ -282,6 +286,60 @@ public class Server {
                             counterdisc++;
 
                         }
+
+                        synchronized (lockobj) {
+                            if (sendBoardID == id) {
+                                updateBoard();
+                            }
+                        }
+                            if (!lostArr.isEmpty()) {
+
+                            arrSizeBeforeRemoval = lostArr.size();
+                                if(activePlayers.size() == arrSizeBeforeRemoval){
+                                    lostCounter = PLAYERS;
+                                }
+                                System.out.println("ARRAY SIZE " + arrSizeBeforeRemoval);
+                               if (lostArr.contains(id)) {
+                                   outMsg = "LOST " + position;
+                                   positions.add(position);
+                                   clientsPositions.put(id, positions);
+                                   activePlayers.remove(id);
+                                   if (id == sendBoardID) {
+                                       setBoardSender = false;
+                                   }
+                                   lostArr.remove(id);
+                                   out.println(outMsg);
+
+
+                                   lock.lock();
+                                   try {
+                                       while (!lostArr.isEmpty()) {
+                                           counter.await();
+                                       }
+                                       counter.signal();
+                                   } catch (InterruptedException e) {
+                                       e.printStackTrace();
+                                   } finally {
+                                       synchronized (lockobj){
+                                           if (!editPosition) {
+                                               position -= arrSizeBeforeRemoval;
+                                               lostCounter += arrSizeBeforeRemoval;
+                                               arrSizeBeforeRemoval = 0;
+                                               editPosition = true;
+                                           }
+                                       }
+                                       lock.unlock();
+                                       editPosition = false;
+                                   }
+
+                                    break;
+                                }
+
+                            }
+
+
+
+
                         if (inMsg != null) {
                             counterdisc = 0;
                             if (inMsg.startsWith("MOVE ")) {
@@ -302,33 +360,25 @@ public class Server {
                             System.out.println(inMsg);
                             inMsg = null;
                         }
+
+
                         synchronized (lockobj) {
                             if (id == sendBoardID) {
                                 sendBoardStatus = false;
-
+                                System.out.println("POSITION NUMBER " + position);
+                                System.out.println("LOST COUNTER " + lostCounter);
                             }
                         }
 
+
                     }
 
- /*                   lock.lock();
-                    try {
-                        while (lostCounter < PLAYERS) {
-                            counter.await();
-                        }
-                        counter.signalAll();
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    } finally {
-                        lock.unlock();
-                    }*/
 
                      waiter = new Waiter(socket);
                      lock.lock();
                      try {
                          waiter.start();
                          while (lostCounter < PLAYERS) {
-                             System.out.println("LOSTCOUNT LOCK " + lostCounter);
                              counter.await();
                          }
                          counter.signalAll();
@@ -341,7 +391,6 @@ public class Server {
                          waiter.interrupt();
                      }
 
-System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
                      if(ROUNDS>=5){
                          break;
@@ -359,13 +408,10 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
                                      outBuffer.append(" ").append(entry.getValue()[0]).append(" ").append(entry.getValue()[1]);
                                  }
                                  sendMesageToAll(outBuffer.toString());
-                                 Board = new int[100][100];
-                                 position = PLAYERS;
                                  sendRoundStatus = true;
                                  increaseRoundsVar = false;
                                  setBoardSender = false;
                                  beginCounter = 0;
-                              //   ROUNDS++;
                                  activePlayers = new ConcurrentHashMap<>();
                              }
                          }
@@ -424,6 +470,9 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
                      synchronized (lockobj){
                          if(!increaseRoundsVar){
                              lostCounter = 0;
+                             Board = new int[100][100];
+                             position = PLAYERS;
+                             lostArr = new HashSet<>();
                              ROUNDS++;
                              increaseRoundsVar = true;
                          }
@@ -431,8 +480,15 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
                      }
 
+                     try{
+                         barrier.await();
+                     }
+                     catch (InterruptedException | BrokenBarrierException ex) {
+                         ex.printStackTrace();
+                     }
 
-                }
+
+                 }
 
 
                 synchronized (lockobj){
@@ -443,7 +499,6 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
                         sendRankingStatus = true;
                     }
                 }
-                System.out.println("TU JESTEM");
    /*             synchronized (lockobj){
                     System.out.println("TU TEZ JESTEM");
                     if(!disconnectAll){
@@ -505,34 +560,38 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
 
     private static String getRanking(){
-        HashMap<String, Integer> map = new HashMap<String, Integer>();
+        HashMap<Integer, Integer> map = new HashMap<Integer, Integer>();
 
         String login;
         int sum;
+        int id;
         ArrayList<Integer> positions;
 
         StringBuilder outBuffer = new StringBuilder();
 
         for (Map.Entry<Integer, ArrayList<Integer>> entry : clientsPositions.entrySet()){
             sum = 0;
-            login = clientsLogins.get(entry.getKey());
+            id = entry.getKey();
             positions = entry.getValue();
             for(Integer position : positions){
                 sum+=position;
             }
-            map.put(login , sum);
+            map.put(id , sum);
+
         }
 
-        Comparator<String> comparator = new ValueComparator<String, Integer>(map);
-        TreeMap<String, Integer> finalpositions = new TreeMap<String, Integer>(comparator);
+        Comparator<Integer> comparator = new ValueComparator<Integer>(map);
+        TreeMap<Integer, Integer> finalpositions = new TreeMap<Integer, Integer>(comparator);
         finalpositions.putAll(map);
 
 
         outBuffer.append("ENDGAME ");
 
-        for(Map.Entry<String,Integer> entry : finalpositions.entrySet()) {
-            String key = entry.getKey();
+        for(Map.Entry<Integer,Integer> entry : finalpositions.entrySet()) {
+            //String key = clientsLogins.get(entry.getKey());
+            int key = entry.getKey();
             Integer value = entry.getValue();
+            System.out.println(key + " "+ value);
 
             outBuffer.append(key).append(" ").append(value).append(" ");
         }
@@ -611,19 +670,18 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
     }
 
-    public static int updateBoard(){
-        int lost = 0;
+    public static void updateBoard(){
             for (Map.Entry<Integer, int[]> entry : clientsData.entrySet()) {
                 for (Integer activeID : activePlayers.keySet()) {
                     int id = entry.getKey();
                     int[] coords = entry.getValue();
                     if (activeID == id) {
-                     //   System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
+                        System.out.println("ID " + id + " " + coords[0] + " " + coords[1]);
                         if (coords[0] < 1 || coords[1] < 1 || coords[0] > 100 || coords[1] > 100) {
-                            lost = id;
-                        } else if ((Board[coords[0] - 1][coords[1] - 1]) != 0 && (Board[coords[0] - 1][coords[1] - 1] != id)) {
+                            lostArr.add(id);
+                        } else if ((Board[coords[0] - 1][coords[1] - 1]) != 0 ) {
                             System.out.println("ID " + id + "LOST AT " + coords[0] + " " + coords[1] + " BECAUSE OF ID " + Board[coords[0] - 1][coords[1] - 1]);
-                            lost = id;
+                            lostArr.add(id);
                         } else {
                             Board[coords[0] - 1][coords[1] - 1] = id;
                         }
@@ -631,7 +689,6 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
                 }
             }
 
-        return lost;
     }
 
     public static Socket getSocketById(int id){
@@ -679,16 +736,32 @@ System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
 }
 
-class ValueComparator<K, V extends Comparable<V>> implements Comparator<K>{
+class ValueComparator<Integer extends Comparable<Integer>> implements Comparator<Integer>{
 
-    HashMap<K, V> map = new HashMap<K, V>();
+    HashMap<Integer, Integer> map = new HashMap<Integer,Integer>();
 
-    public ValueComparator(HashMap<K, V> map){
+    public ValueComparator(HashMap<Integer,Integer> map){
         this.map.putAll(map);
     }
 
     @Override
-    public int compare(K s1, K s2) {
-        return map.get(s1).compareTo(map.get(s2));
+    public int compare(Integer s1, Integer s2) {
+
+        if (map.get(s1).compareTo(map.get(s2)) == -1)
+        {
+            return map.get(s1).compareTo(map.get(s2));
+        }
+        else if(map.get(s1).compareTo(map.get(s2)) == 0){
+            if(s1.compareTo(s2) == -1){
+                return map.get(s1).compareTo(map.get(s2));
+            }
+            else if(s1.compareTo(s2) == 1){
+                return -map.get(s1).compareTo(map.get(s2));
+            }
+        }
+        else{
+            return 1;
+        }
+        return 1;
     }
 }
