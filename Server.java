@@ -16,7 +16,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 3;
+    private static final int PLAYERS = 5;
 
 
     private static Random r = new Random();
@@ -34,12 +34,14 @@ public class Server {
     private static int lostCounter = 0;
     private static int ROUNDS = 1;
     private static int position = PLAYERS ;
+    private static int sendBoardID;
     private static boolean statusStatus = false;
     private static boolean sendGameStatus = false;
     private static boolean sendBoardStatus = false;
     private static boolean sendRoundStatus = false;
     private static boolean sendRankingStatus = false;
     private static boolean setBoardSender = false;
+    private static boolean increaseRoundsVar = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
@@ -228,7 +230,6 @@ public class Server {
                     inMsg = null;
                     int counterdisc = 0;
                     int lost;
-                    int sendBoardID = 0;
                     while (true) {
 
                         // System.out.println(lostCounter);
@@ -253,6 +254,9 @@ public class Server {
                             positions.add(position);
                             clientsPositions.put(id,positions);
                             activePlayers.remove(id);
+                            if(id == sendBoardID){
+                                setBoardSender = false;
+                            }
                             position--;
                             out.println(outMsg);
                             break;
@@ -266,7 +270,7 @@ public class Server {
                         }
                         synchronized (lockobj) {
                             if (!sendBoardStatus && id == sendBoardID) {
-                                sendBoardToActiveTCP("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
+                                sendBoardToActiveTCP(id + " BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
                                 sendBoardStatus = true;
                             }
                         }
@@ -301,7 +305,7 @@ public class Server {
                         synchronized (lockobj) {
                             if (id == sendBoardID) {
                                 sendBoardStatus = false;
-                                setBoardSender = false;
+
                             }
                         }
 
@@ -324,7 +328,7 @@ public class Server {
                      try {
                          waiter.start();
                          while (lostCounter < PLAYERS) {
-                      //       System.out.println("LOSTCOUNT LOCK " + lostCounter);
+                             System.out.println("LOSTCOUNT LOCK " + lostCounter);
                              counter.await();
                          }
                          counter.signalAll();
@@ -337,7 +341,7 @@ public class Server {
                          waiter.interrupt();
                      }
 
-//System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
+System.out.println("PRZESZEDLEM LOSTCOUNT LOCKA!!");
 
                      if(ROUNDS>=5){
                          break;
@@ -358,9 +362,10 @@ public class Server {
                                  Board = new int[100][100];
                                  position = PLAYERS;
                                  sendRoundStatus = true;
+                                 increaseRoundsVar = false;
                                  setBoardSender = false;
                                  beginCounter = 0;
-                                 ROUNDS++;
+                              //   ROUNDS++;
                                  activePlayers = new ConcurrentHashMap<>();
                              }
                          }
@@ -417,8 +422,13 @@ public class Server {
                         sendRoundStatus = false;
 
                      synchronized (lockobj){
+                         if(!increaseRoundsVar){
+                             lostCounter = 0;
+                             ROUNDS++;
+                             increaseRoundsVar = true;
+                         }
                      //    System.out.println(beginCounter);
-                         lostCounter = 0;
+
                      }
 
 
@@ -429,10 +439,20 @@ public class Server {
                     if(!sendRankingStatus) {
                         String ranking = getRanking();
                         sendMesageToAll(ranking);
-                        sendRankingStatus = true;
                         sendMesageToAll("DISCONNECT");
+                        sendRankingStatus = true;
                     }
                 }
+                System.out.println("TU JESTEM");
+   /*             synchronized (lockobj){
+                    System.out.println("TU TEZ JESTEM");
+                    if(!disconnectAll){
+
+                        disconnectAll = true;
+                    }
+                }*/
+
+
             } catch (IOException e) {
                 e.printStackTrace();
             } finally {
