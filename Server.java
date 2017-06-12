@@ -7,10 +7,9 @@ import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.sql.Time;
 import java.util.*;
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -18,8 +17,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static final int PLAYERS = 12;
-
+    private static final int PLAYERS = 8;
 
     private static Random r = new Random();
 
@@ -34,6 +32,7 @@ public class Server {
     private static HashMap<Integer, String> clientsBeginDirections = new HashMap<>();
     private static int beginCounter = 0;
     private static int lostCounter = 0;
+    private static int moveCounter = 0;
     private static HashSet<Integer> lostArr = new HashSet<>();
     private static int ROUNDS = 1;
     private static int position = PLAYERS;
@@ -47,11 +46,12 @@ public class Server {
     private static boolean setBoardSender = false;
     private static boolean increaseRoundsVar = false;
     private static boolean editPosition = false;
+    private static boolean lastTwoRemaining = false;
     private static Lock lock = new ReentrantLock();
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
     private static int[][] Board = new int[100][100];
-    private static CyclicBarrier barrier = new CyclicBarrier(PLAYERS);
+    private static CyclicBarrier barrier;
 
 
 
@@ -225,9 +225,8 @@ public class Server {
 
 
                 //GRA
-
                  while(ROUNDS <=5 ) {
-                    socket.setSoTimeout(500);
+                    socket.setSoTimeout(300);
                     synchronized (lockobj){
                         activePlayers.put(id, out);
                     }
@@ -249,7 +248,10 @@ public class Server {
                          lock.unlock();
                      }
 
+
+                    barrier = new CyclicBarrier(activePlayers.size());
                     while (true) {
+
                         PrintWriter testWriter = activePlayers.get(id);
                         synchronized (lockobj) {
                             if (testWriter != null && !setBoardSender) {
@@ -280,23 +282,56 @@ public class Server {
                         }
 
                         try {
-                            clientBeginMove(clientSockets.get(socket), clientsBeginDirections.get(clientSockets.get(socket)));
                             inMsg = in.readLine();
                         } catch (SocketTimeoutException e) {
                             counterdisc++;
 
                         }
 
+
+                        if (inMsg != null) {
+                            counterdisc = 0;
+                            if (inMsg.startsWith("MOVE ")) {
+                                String movepart[] = inMsg.split(" ");
+                                if (directionsMove.contains(movepart[1])) {
+                                    changeDirection(movepart[1], id);
+                                    outMsg = "OK";
+                                    out.println(outMsg);
+                                } else {
+                                    outMsg = "ERROR";
+                                    out.println(outMsg);
+                                }
+                            } else {
+                                outMsg = "ERROR";
+                                out.println(outMsg);
+                            }
+
+                            System.out.println(inMsg);
+                            inMsg = null;
+                        }
+
                         synchronized (lockobj) {
+                            clientBeginMove(clientSockets.get(socket), clientsBeginDirections.get(clientSockets.get(socket)));
+                            moveCounter++;
+                        }
+
+                        try{
+                            barrier.await(500, TimeUnit.MILLISECONDS);
+                        }
+                        catch (InterruptedException|BrokenBarrierException | TimeoutException ex){
+                        }
+
+                        synchronized (lockobj){
                             if (sendBoardID == id) {
                                 updateBoard();
                             }
                         }
                             if (!lostArr.isEmpty()) {
 
-                            arrSizeBeforeRemoval = lostArr.size();
+                                arrSizeBeforeRemoval = lostArr.size();
                                 if(activePlayers.size() == arrSizeBeforeRemoval){
                                     lostCounter = PLAYERS;
+                                    lastTwoRemaining = true;
                                 }
                                 System.out.println("ARRAY SIZE " + arrSizeBeforeRemoval);
                                if (lostArr.contains(id)) {
@@ -321,14 +356,18 @@ public class Server {
                                        e.printStackTrace();
                                    } finally {
                                        synchronized (lockobj){
-                                           if (!editPosition) {
+                                           if (!editPosition && !lastTwoRemaining) {
                                                position -= arrSizeBeforeRemoval;
                                                lostCounter += arrSizeBeforeRemoval;
                                                arrSizeBeforeRemoval = 0;
                                                editPosition = true;
                                            }
+                                           if(activePlayers.size() > 0 && (activePlayers.size() != arrSizeBeforeRemoval)) {
+                                               barrier = new CyclicBarrier(activePlayers.size());
+                                           }
                                        }
                                        lock.unlock();
+
                                        editPosition = false;
                                    }
 
@@ -340,28 +379,6 @@ public class Server {
 
 
 
-                        if (inMsg != null) {
-                            counterdisc = 0;
-                            if (inMsg.startsWith("MOVE ")) {
-                                String movepart[] = inMsg.split(" ");
-                                if (directionsMove.contains(movepart[1])) {
-                                    changeDirection(movepart[1], id);
-                                    outMsg = "OK";
-                                    out.println(outMsg);
-                                } else {
-                                    outMsg = "ERROR";
-                                    out.println(outMsg);
-                                }
-                            } else {
-                                outMsg = "ERROR";
-                                out.println(outMsg);
-                            }
-
-                            System.out.println(inMsg);
-                            inMsg = null;
-                        }
-
-
                         synchronized (lockobj) {
                             if (id == sendBoardID) {
                                 sendBoardStatus = false;
@@ -371,7 +388,9 @@ public class Server {
                         }
 
 
+
                     }
+
 
 
                      waiter = new Waiter(socket);
@@ -418,6 +437,15 @@ public class Server {
                      }
                      socket.setSoTimeout(0);
 
+
+                     try{
+                         barrier.await();
+                     }
+                     catch (InterruptedException|BrokenBarrierException e){
+                         e.printStackTrace();
+                     }
+
+
                         while (true) {
                             inMsg = in.readLine();
                             if(inMsg == null){
@@ -452,7 +480,6 @@ public class Server {
                     try {
                         waiter.start();
                         while (beginCounter < PLAYERS) {
-                      //      System.out.println(beginCounter + " HALO");
                             counter.await();
                         }
                         counter.signalAll();
@@ -483,8 +510,8 @@ public class Server {
                      try{
                          barrier.await();
                      }
-                     catch (InterruptedException | BrokenBarrierException ex) {
-                         ex.printStackTrace();
+                     catch (InterruptedException|BrokenBarrierException e){
+                         e.printStackTrace();
                      }
 
 
@@ -560,7 +587,8 @@ public class Server {
 
 
     private static String getRanking(){
-        HashMap<Integer, Integer> map = new HashMap<Integer, Integer>();
+        //HashMap<String, Integer> map = new HashMap<>();
+        HashMap<Integer,Integer> map = new HashMap<>();
 
         String login;
         int sum;
@@ -571,6 +599,7 @@ public class Server {
 
         for (Map.Entry<Integer, ArrayList<Integer>> entry : clientsPositions.entrySet()){
             sum = 0;
+          //  login = clientsLogins.get(entry.getKey());
             id = entry.getKey();
             positions = entry.getValue();
             for(Integer position : positions){
@@ -580,16 +609,15 @@ public class Server {
 
         }
 
-        Comparator<Integer> comparator = new ValueComparator<Integer>(map);
-        TreeMap<Integer, Integer> finalpositions = new TreeMap<Integer, Integer>(comparator);
-        finalpositions.putAll(map);
+        Map<Integer,Integer> finalpositions = createSortedMap(map);
 
 
         outBuffer.append("ENDGAME ");
 
         for(Map.Entry<Integer,Integer> entry : finalpositions.entrySet()) {
-            //String key = clientsLogins.get(entry.getKey());
-            int key = entry.getKey();
+            String key = clientsLogins.get(entry.getKey());
+          //  String key = entry.getKey();
+            //int key = entry.getKey();
             Integer value = entry.getValue();
             System.out.println(key + " "+ value);
 
@@ -680,7 +708,7 @@ public class Server {
                         if (coords[0] < 1 || coords[1] < 1 || coords[0] > 100 || coords[1] > 100) {
                             lostArr.add(id);
                         } else if ((Board[coords[0] - 1][coords[1] - 1]) != 0 ) {
-                            System.out.println("ID " + id + "LOST AT " + coords[0] + " " + coords[1] + " BECAUSE OF ID " + Board[coords[0] - 1][coords[1] - 1]);
+                            System.out.println("ID " + id + " mLOST AT " + coords[0] + " " + coords[1] + " BECAUSE OF ID " + Board[coords[0] - 1][coords[1] - 1]);
                             lostArr.add(id);
                         } else {
                             Board[coords[0] - 1][coords[1] - 1] = id;
@@ -733,6 +761,26 @@ public class Server {
         }
     }
 
+    private static Map<Integer, Integer> createSortedMap(Map<Integer, Integer> passedMap) {
+        List<Map.Entry<Integer, Integer>> entryList = new ArrayList<>(passedMap.entrySet());
+
+        Collections.sort(entryList, (e1, e2) -> {
+            if (!e1.getValue().equals(e2.getValue())) {
+                return e1.getValue().compareTo(e2.getValue()); // The * -1 reverses the order.
+            } else {
+                return e1.getKey().compareTo(e2.getKey());
+            }
+        });
+
+        Map<Integer, Integer> orderedMap = new LinkedHashMap<Integer, Integer>();
+
+        for (Map.Entry<Integer, Integer> entry : entryList) {
+            orderedMap.put(entry.getKey(), entry.getValue());
+        }
+
+        return orderedMap;
+    }
+
 
 }
 
@@ -751,17 +799,11 @@ class ValueComparator<Integer extends Comparable<Integer>> implements Comparator
         {
             return map.get(s1).compareTo(map.get(s2));
         }
-        else if(map.get(s1).compareTo(map.get(s2)) == 0){
-            if(s1.compareTo(s2) == -1){
-                return map.get(s1).compareTo(map.get(s2));
-            }
-            else if(s1.compareTo(s2) == 1){
-                return -map.get(s1).compareTo(map.get(s2));
-            }
-        }
         else{
-            return 1;
+            return -map.get(s1).compareTo(map.get(s2));
+
         }
-        return 1;
     }
 }
+
+
