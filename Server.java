@@ -15,7 +15,7 @@ public class Server {
     private static final int PORT = 9001;
     private static int PLAYERS = 8;
     private static final int MAXERRORS = 100;
-    private static final int TIMEOUT = 3000;
+    private static final int TIMEOUT = 0;
 
     private static Random r = new Random();
 
@@ -56,6 +56,8 @@ public class Server {
 
     public static void main(String[] args) throws Exception {
         System.out.println("The server is running.");
+        PrintWriter fileWriterErase = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", false)));
+        fileWriterErase.close();
         try (ServerSocket listener = new ServerSocket(PORT)) {
             for(int i = 1; i<= PLAYERS;i++) {
                 new Player(listener.accept(), i).start();
@@ -89,8 +91,6 @@ public class Server {
                         socket.getInputStream()));
                 out = new PrintWriter(socket.getOutputStream(), true);
 
-                PrintWriter fileWriterErase = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", false)));
-                fileWriterErase.close();
                 PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
 
                 socket.setSoTimeout(TIMEOUT);
