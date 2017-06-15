@@ -244,9 +244,6 @@ public class Server {
                         }
                     }
 
-/*
-                    System.out.println("PHASER REGISTERD" + phaser.getRegisteredParties());
-                    System.out.println("PHASER UNARRIVED" + phaser.getUnarrivedParties());*/
                     if(socket.isConnected() && !socket.isClosed()){
                         waiter = new Waiter(socket);
                         waiter.start();
