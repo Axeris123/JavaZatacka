@@ -16,7 +16,7 @@ public class Server {
     private static final int PORT = 9001;
     private static int PLAYERS = 4;
     private static final int MAXERRORS = 20;
-    private static final int TIMEOUT = 5000;
+    private static final int TIMEOUT = 4000;
 
     private static Random r = new Random();
 
@@ -197,9 +197,8 @@ public class Server {
                                 inMsg = in.readLine();
                             }
                             catch (SocketTimeoutException | SocketException e){
-                                phaser.arriveAndDeregister();
-                                System.out.println("DEREGISTERED");
                                 timeoutKick(socket);
+                                phaser.arriveAndDeregister();
                                 break;
                             }
                             fileWriter.println("FROM ID: " + id + " " + inMsg);
@@ -245,9 +244,9 @@ public class Server {
                         }
                     }
 
-
+/*
                     System.out.println("PHASER REGISTERD" + phaser.getRegisteredParties());
-                    System.out.println("PHASER UNARRIVED" + phaser.getUnarrivedParties());
+                    System.out.println("PHASER UNARRIVED" + phaser.getUnarrivedParties());*/
                     if(socket.isConnected() && !socket.isClosed()){
                         waiter = new Waiter(socket);
                         waiter.start();
@@ -261,13 +260,11 @@ public class Server {
                             if (beginCounter == PLAYERS && !sendGameStatus) {
                                 outMsg = "GAME";
                                 sendMesageToAll(outMsg);
-                                phaser =new Phaser();
+                                phaser = new Phaser();
                                 sendGameStatus = true;
                             }
                         }
                     }
-
-
                 //GRA
                 int counterdisc = 0;
                  while(ROUNDS <=5 ) {
@@ -327,8 +324,8 @@ public class Server {
 
                         }
                         catch (SocketException e){
-                            phaser.arriveAndDeregister();
                             timeoutKick(socket);
+                            phaser.arriveAndDeregister();
                             break;
                         }
 
