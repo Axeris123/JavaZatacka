@@ -3,6 +3,7 @@ package Server;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.*;
 import java.util.concurrent.*;
@@ -13,9 +14,9 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
 
     private static final int PORT = 9001;
-    private static int PLAYERS = 8;
-    private static final int MAXERRORS = 100;
-    private static final int TIMEOUT = 0;
+    private static int PLAYERS = 4;
+    private static final int MAXERRORS = 20;
+    private static final int TIMEOUT = 5000;
 
     private static Random r = new Random();
 
@@ -48,7 +49,6 @@ public class Server {
     private static Condition counter = lock.newCondition();
     private static final Object lockobj = new Object();
     private static int[][] Board = new int[100][100];
-    private static CyclicBarrier barrier;
     private static Phaser phaser = new Phaser();
 
 
@@ -87,6 +87,8 @@ public class Server {
         public void run() {
             try {
 
+                phaser.register();
+
                 in = new BufferedReader(new InputStreamReader(
                         socket.getInputStream()));
                 out = new PrintWriter(socket.getOutputStream(), true);
@@ -103,23 +105,27 @@ public class Server {
                     try {
                         inMsg = in.readLine();
                     }
-                    catch (SocketTimeoutException e){
+                    catch (SocketTimeoutException | SocketException e){
                         timeoutKick(socket);
                     }
                     fileWriter.println("FROM ID: " + id + " " + inMsg);
-                    String loginpart[] = inMsg.split(" ");
+
                     if (inMsg == null) {
                         outMsg = "ERROR";
                         fileWriter.println("TO ID: " + id + " " + outMsg);
                         out.println(outMsg);
                         errorCounter++;
                         clientsErrors.put(id,errorCounter);
-                        checkErrors(socket);
+                        if(checkErrors(socket)){
+                            phaser.arriveAndDeregister();
+                            break;
+                        }
                     }
                     else{
                         //LOGIN
                         synchronized (lockobj) {
                             if (inMsg.startsWith("LOGIN ") && (inMsg.length() > 6)) {
+                                String loginpart[] = inMsg.split(" ");
                                 int[] coords = new int[2];
                                 coords[0] = r.nextInt(100) + 1;
                                 coords[1] = r.nextInt(100) + 1;
@@ -168,6 +174,8 @@ public class Server {
                     waiter.interrupt();
                 }
 
+
+
                 //START I PLAYERS
                 synchronized (lockobj) {
                     if (clientsLogins.size() == PLAYERS && !statusStatus) {
@@ -188,8 +196,11 @@ public class Server {
                             try {
                                 inMsg = in.readLine();
                             }
-                            catch (SocketTimeoutException e){
+                            catch (SocketTimeoutException | SocketException e){
+                                phaser.arriveAndDeregister();
+                                System.out.println("DEREGISTERED");
                                 timeoutKick(socket);
+                                break;
                             }
                             fileWriter.println("FROM ID: " + id + " " + inMsg);
                             if (inMsg == null) {
@@ -198,7 +209,10 @@ public class Server {
                                 out.println(outMsg);
                                 errorCounter++;
                                 clientsErrors.put(id,errorCounter);
-                                checkErrors(socket);
+                                if(checkErrors(socket)){
+                                    phaser.arriveAndDeregister();
+                                    break;
+                                }
                             } else {
                                synchronized (lockobj) {
                                     String beginpart[] = inMsg.split(" ");
@@ -231,43 +245,43 @@ public class Server {
                         }
                     }
 
-                    waiter = new Waiter(socket);
-                    lock.lock();
-                    try {
+
+                    System.out.println("PHASER REGISTERD" + phaser.getRegisteredParties());
+                    System.out.println("PHASER UNARRIVED" + phaser.getUnarrivedParties());
+                    if(socket.isConnected() && !socket.isClosed()){
+                        waiter = new Waiter(socket);
                         waiter.start();
-                        while (beginCounter < PLAYERS) {
-                       //     System.out.println("BEGINCOUNTER " + beginCounter);
-                            counter.await();
-                        }
-                        counter.signalAll();
-                    }
-                    catch (InterruptedException e){
-                        e.printStackTrace();
-                    }
-                    finally {
-                        lock.unlock();
+                        phaser.arriveAndAwaitAdvance();
                         waiter.interrupt();
-                    }
 
 
-//System.out.println("PRZESZEDLEM 1 BEGIN !!!");
-                //GAME
-                synchronized (lockobj) {
-                    if (beginCounter == PLAYERS && !sendGameStatus) {
-                        outMsg = "GAME";
-                        sendMesageToAll(outMsg);
-                        sendGameStatus = true;
+
+                        //GAME
+                        synchronized (lockobj) {
+                            if (beginCounter == PLAYERS && !sendGameStatus) {
+                                outMsg = "GAME";
+                                sendMesageToAll(outMsg);
+                                phaser =new Phaser();
+                                sendGameStatus = true;
+                            }
+                        }
                     }
-                }
+
 
                 //GRA
                 int counterdisc = 0;
                  while(ROUNDS <=5 ) {
-                    socket.setSoTimeout(500);
+                     if(socket.isConnected() && !socket.isClosed()) {
+                         socket.setSoTimeout(500);
+                     }
+                     else{
+                         break;
+                     }
                     synchronized (lockobj){
                         activePlayers.put(id, out);
                         phaser.register();
                     }
+
 
                     inMsg = null;
 
@@ -283,7 +297,9 @@ public class Server {
                          lock.unlock();
                      }
 
+
                     while (true) {
+
                         PrintWriter testWriter = activePlayers.get(id);
                         synchronized (lockobj) {
                             if (testWriter != null && !setBoardSender) {
@@ -300,15 +316,20 @@ public class Server {
                         }
 
                         try {
-                            inMsg = in.readLine();
+                                inMsg = in.readLine();
                         } catch (SocketTimeoutException e) {
                             counterdisc++;
-                            if(counterdisc == 20){
+                            if(counterdisc == 2000){
                                 timeoutKick(socket);
                                 phaser.arriveAndDeregister();
                                 break;
                             }
 
+                        }
+                        catch (SocketException e){
+                            phaser.arriveAndDeregister();
+                            timeoutKick(socket);
+                            break;
                         }
 
                         if (inMsg != null) {
@@ -342,16 +363,16 @@ public class Server {
                             inMsg = null;
                         }
 
-                        synchronized (lockobj) {
+                      synchronized (lockobj) {
                             clientBeginMove(clientSockets.get(socket), clientsBeginDirections.get(clientSockets.get(socket)));
                         }
 
-/*                        System.out.println("WAITING THREADS " + phaser.getArrivedParties());
-                        System.out.println("NOT ARRIVED THREADS " + phaser.getUnarrivedParties());*/
                         phaser.arriveAndAwaitAdvance();
 
                         synchronized (lockobj){
                             if (sendBoardID == id) {
+/*                                System.out.println("PHASER REGISTERD" + phaser.getRegisteredParties());
+                                System.out.println("PHASER UNARRIVED" + phaser.getUnarrivedParties());*/
                                 updateBoard();
                             }
                         }
@@ -368,11 +389,11 @@ public class Server {
                                 positions.add(position);
                                 clientsPositions.put(id, positions);
                                 activePlayers.remove(id);
+                                phaser.arriveAndDeregister();
                                 if (id == sendBoardID) {
                                     setBoardSender = false;
                                 }
                                 lostArr.remove(id);
-                                phaser.arriveAndDeregister();
                                 fileWriter.println("TO ID: " + id + " " + outMsg);
                                 out.println(outMsg);
 
@@ -406,10 +427,10 @@ public class Server {
                             positions.add(1);
                             clientsPositions.put(id,positions);
                             activePlayers.remove(id);
-                            phaser.arriveAndDeregister();
                             fileWriter.println("TO ID: " + id + " " + outMsg);
                             out.println(outMsg);
                             lostCounter = PLAYERS;
+                            phaser.arriveAndDeregister();
                             break;
                         }
 
@@ -418,7 +439,7 @@ public class Server {
                                 sendBoardStatus = false;
                             }
                         }
-                       // phaser.arriveAndDeregister();
+                        phaser.arriveAndAwaitAdvance();
                     }
 
 
@@ -457,8 +478,8 @@ public class Server {
                          break;
                      }
                      else {
-                         synchronized (lockobj) {
 
+                         synchronized (lockobj) {
                              if (!sendRoundStatus) {
                                  outMsg = "ROUND " + (ROUNDS + 1);
                                  sendMesageToAll(outMsg);
@@ -473,18 +494,15 @@ public class Server {
                                  increaseRoundsVar = false;
                                  setBoardSender = false;
                                  beginCounter = 0;
-                                 barrier = new CyclicBarrier(PLAYERS);
+                                 phaser = new Phaser();
                              }
+
                          }
                      }
-                     socket.setSoTimeout(0);
 
-                     try{
-                         barrier.await();
-                     }
-                     catch (InterruptedException|BrokenBarrierException e){
-                         e.printStackTrace();
-                     }
+                     phaser.register();
+
+                     socket.setSoTimeout(TIMEOUT);
 
 
                         while (true) {
@@ -493,6 +511,13 @@ public class Server {
                             }
                             catch (SocketTimeoutException e){
                                 timeoutKick(socket);
+                                phaser.arriveAndDeregister();
+                                break;
+                            }
+                            catch (SocketException e){
+                                timeoutKick(socket);
+                                phaser.arriveAndDeregister();
+                                break;
                             }
                             fileWriter.println("FROM ID: " + id + " " + inMsg);
                             if(inMsg == null){
@@ -501,7 +526,10 @@ public class Server {
                                 out.println(outMsg);
                                 errorCounter++;
                                 clientsErrors.put(id,errorCounter);
-                                checkErrors(socket);
+                                if(checkErrors(socket)){
+                                    phaser.arriveAndDeregister();
+                                    break;
+                                }
                             }
                             else {
                                 synchronized (lockobj) {
@@ -534,45 +562,34 @@ public class Server {
                             }
                         }
 
-                     waiter = new Waiter(socket);
-                    lock.lock();
-                    try {
+
+
+                    if(socket.isConnected() && !socket.isClosed()) {
+                        waiter = new Waiter(socket);
                         waiter.start();
-                        while (beginCounter < PLAYERS) {
-                            counter.await();
-                        }
-                        counter.signalAll();
-                    }
-                    catch (InterruptedException e){
-                        e.printStackTrace();
-                    }
-                    finally {
-                        lock.unlock();
+
+                        phaser.arriveAndAwaitAdvance();
                         waiter.interrupt();
+
+
+
+
+                        synchronized (lockobj) {
+                            if (!increaseRoundsVar) {
+                                lostCounter = 0;
+                                Board = new int[100][100];
+                                position = PLAYERS;
+                                lostArr = new HashSet<>();
+                                ROUNDS++;
+                                increaseRoundsVar = true;
+                                sendRoundStatus = false;
+                                activePlayers = new ConcurrentHashMap<>();
+                                phaser=new Phaser();
+                            }
+
+                        }
                     }
 
-
-                     synchronized (lockobj){
-                         if(!increaseRoundsVar){
-                             lostCounter = 0;
-                             Board = new int[100][100];
-                             position = PLAYERS;
-                             lostArr = new HashSet<>();
-                             ROUNDS++;
-                             increaseRoundsVar = true;
-                             sendRoundStatus = false;
-                             activePlayers = new ConcurrentHashMap<>();
-                             barrier = new CyclicBarrier(PLAYERS);
-                         }
-
-                     }
-
-                     try{
-                         barrier.await();
-                     }
-                     catch (InterruptedException|BrokenBarrierException e){
-                         e.printStackTrace();
-                     }
 
 
                  }
@@ -632,29 +649,30 @@ public class Server {
         }
 
         public void run(){
-            try{
-                PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
-            while(!isInterrupted()) {
+            if(socket.isConnected() && !socket.isClosed()) {
+                try {
+                    PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
+                    while (!isInterrupted()) {
 
-                    in = new BufferedReader(new InputStreamReader(
-                            socket.getInputStream()));
-                    out = new PrintWriter(socket.getOutputStream(), true);
+                        in = new BufferedReader(new InputStreamReader(
+                                socket.getInputStream()));
+                        out = new PrintWriter(socket.getOutputStream(), true);
 
-                    if (in.ready()) {
-                        inMsg = in.readLine();
-                        outMsg = "ERROR FROM WAITER";
-                        fileWriter.println("FROM ID: " + clientSockets.get(socket) + " " + inMsg);
-                        fileWriter.println("TO ID: " + clientSockets.get(socket) + " " + outMsg);
-                        out.println(outMsg);
-                        errorCount++;
-                        clientsErrors.put(id,errorCount);
-                        checkErrors(socket);
+                        if (in.ready()) {
+                            inMsg = in.readLine();
+                            outMsg = "ERROR FROM WAITER";
+                            fileWriter.println("FROM ID: " + clientSockets.get(socket) + " " + inMsg);
+                            fileWriter.println("TO ID: " + clientSockets.get(socket) + " " + outMsg);
+                            out.println(outMsg);
+                            errorCount++;
+                            clientsErrors.put(id, errorCount);
+                            checkErrors(socket);
+                        }
+
                     }
-
+                } catch (IOException e) {
+                    e.printStackTrace();
                 }
-            }
-            catch (IOException e) {
-                e.printStackTrace();
             }
         }
 
@@ -662,68 +680,89 @@ public class Server {
     }
 
 
-    private static void checkErrors(Socket socket){
-        int id = clientSockets.get(socket);
-        int errorCount = clientsErrors.get(id);
-        PrintWriter activeID = activePlayers.get(id);
-        String outMsg = "MAX ERROR COUNT DISCONNECT";
-        try {
-            PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
-            PrintWriter socketWriter = new PrintWriter(socket.getOutputStream(),true);
-            if (errorCount == MAXERRORS) {
+    private static boolean checkErrors(Socket socket){
+        if(socket.isConnected() && !socket.isClosed()) {
+            int id = clientSockets.get(socket);
+            int errorCount = clientsErrors.get(id);
+            PrintWriter activeID = activePlayers.get(id);
+            String outMsg = "MAX ERROR COUNT DISCONNECT";
+            try {
+                PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
+                PrintWriter socketWriter = new PrintWriter(socket.getOutputStream(), true);
+                if (errorCount == MAXERRORS) {
+                    fileWriter.println("TO ID: " + id + " " + outMsg);
+                    socketWriter.println(outMsg);
+                    clientsErrors.remove(id);
+                    clientSockets.remove(socket);
+                    if (clientsBeginDirections.containsKey(id)) {
+                        clientsBeginDirections.remove(id);
+                    }
+                    if (clientsData.containsKey(id)) {
+                        clientsData.remove(id);
+                    }
+                    if (clientsPositions.containsKey(id)) {
+                        clientsPositions.remove(id);
+                    }
+                    if (clientsLogins.containsKey(id)) {
+                        clientsLogins.remove(id);
+                    }
+                    if (activeID != null) {
+                        activePlayers.remove(id);
+                        if (id == sendBoardID) {
+                            setBoardSender = false;
+                        }
+                        lostCounter++;
+                    }
+                    PLAYERS--;
+                    socket.close();
+                    return true;
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return false;
+
+    }
+
+    private static void timeoutKick(Socket socket){
+        String outMsg = "TIMEOUT DISCONNECT";
+        if(clientSockets.get(socket)!= null) {
+            int id = clientSockets.get(socket);
+            PrintWriter activeID = activePlayers.get(id);
+
+            try {
+                PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
+                PrintWriter socketWriter = new PrintWriter(socket.getOutputStream(), true);
                 fileWriter.println("TO ID: " + id + " " + outMsg);
                 socketWriter.println(outMsg);
                 clientsErrors.remove(id);
                 clientSockets.remove(socket);
-                clientsBeginDirections.remove(id);
-                clientsData.remove(id);
-                clientsPositions.remove(id);
-                clientsLogins.remove(id);
-                if(activeID != null){
+                if (clientsBeginDirections.containsKey(id)) {
+                    clientsBeginDirections.remove(id);
+                }
+                if (clientsData.containsKey(id)) {
+                    clientsData.remove(id);
+                }
+                if (clientsPositions.containsKey(id)) {
+                    clientsPositions.remove(id);
+                }
+                if (clientsLogins.containsKey(id)) {
+                    clientsLogins.remove(id);
+                }
+                if (activeID != null) {
                     activePlayers.remove(id);
-                    if(id == sendBoardID) {
+                    if (id == sendBoardID) {
                         setBoardSender = false;
                     }
                     lostCounter++;
                 }
                 PLAYERS--;
                 socket.close();
+
+            } catch (IOException e) {
+                e.printStackTrace();
             }
-        }
-        catch(IOException e){
-            e.printStackTrace();
-        }
-
-    }
-
-    private static void timeoutKick(Socket socket){
-        String outMsg = "TIMEOUT DISCONNECT";
-        int id = clientSockets.get(socket);
-        PrintWriter activeID = activePlayers.get(id);
-        try{
-            PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
-            PrintWriter socketWriter = new PrintWriter(socket.getOutputStream(),true);
-            fileWriter.println("TO ID: " + id + " " + outMsg);
-            socketWriter.println(outMsg);
-            clientsErrors.remove(id);
-            clientSockets.remove(socket);
-            clientsBeginDirections.remove(id);
-            clientsData.remove(id);
-            clientsPositions.remove(id);
-            clientsLogins.remove(id);
-            if(activeID != null){
-                activePlayers.remove(id);
-                if(id == sendBoardID) {
-                    setBoardSender = false;
-                }
-                lostCounter++;
-            }
-            PLAYERS--;
-            socket.close();
-
-        }
-        catch(IOException e){
-            e.printStackTrace();
         }
 
     }
