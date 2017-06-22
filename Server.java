@@ -15,8 +15,8 @@ public class Server {
 
     private static final int PORT = 9001;
     private static int PLAYERS = 8;
-    private static final int MAXERRORS = 20;
-    private static final int TIMEOUT = 4000;
+    private static final int MAXERRORS = 100;
+    private static final int TIMEOUT = 3000;
     private static final int PLAYERSATSTART = PLAYERS;
 
     private static int CONNECTED = 0;
@@ -105,7 +105,7 @@ public class Server {
 
                 PrintWriter fileWriter = new PrintWriter(new BufferedWriter(new FileWriter("log.txt", true)), true);
 
-                socket.setSoTimeout(TIMEOUT);
+
                 //CONNECT
                 outMsg = "CONNECT";
 
@@ -138,39 +138,48 @@ public class Server {
                     else{
                         //LOGIN
                         synchronized (lockobj) {
-                            if (inMsg.startsWith("LOGIN ") && (inMsg.length() > 6)) {
-                                String loginpart[] = inMsg.split(" ");
-                                int[] coords = new int[2];
-                                coords[0] = r.nextInt(100) + 1;
-                                coords[1] = r.nextInt(100) + 1;
-                                if (!clientsLogins.values().contains(loginpart[1])) {
-                                    clientsLogins.put(id,loginpart[1]);
-                                    clientsData.put(id, coords);
-                                    outMsg = "OK";
-                                    fileWriter.println("TO ID: " + id + " " + outMsg);
-                                    out.println(outMsg);
-                                    CONNECTED++;
-                                    break;
+                            if (CONNECTED < PLAYERS) {
+                                if (inMsg.startsWith("LOGIN ") && (inMsg.length() > 6)) {
+                                    String loginpart[] = inMsg.split(" ");
+                                    int[] coords = new int[2];
+                                    coords[0] = r.nextInt(100) + 1;
+                                    coords[1] = r.nextInt(100) + 1;
+                                    if (!clientsLogins.values().contains(loginpart[1])) {
+                                        clientsLogins.put(id, loginpart[1]);
+                                        clientsData.put(id, coords);
+                                        outMsg = "OK";
+                                        fileWriter.println("TO ID: " + id + " " + outMsg);
+                                        out.println(outMsg);
+                                        CONNECTED++;
+                                        break;
+                                    } else {
+                                        outMsg = "ERROR";
+                                        fileWriter.println("TO ID: " + id + " " + outMsg);
+                                        out.println(outMsg);
+                                        errorCounter++;
+                                        clientsErrors.put(id, errorCounter);
+                                        checkErrors(socket);
+                                    }
                                 } else {
                                     outMsg = "ERROR";
                                     fileWriter.println("TO ID: " + id + " " + outMsg);
                                     out.println(outMsg);
                                     errorCounter++;
-                                    clientsErrors.put(id,errorCounter);
+                                    clientsErrors.put(id, errorCounter);
                                     checkErrors(socket);
                                 }
-                            } else {
-                                outMsg = "ERROR";
+                            }
+                            else{
+                                outMsg = "MAX PLAYER COUNT ERROR";
                                 fileWriter.println("TO ID: " + id + " " + outMsg);
                                 out.println(outMsg);
-                                errorCounter++;
-                                clientsErrors.put(id,errorCounter);
-                                checkErrors(socket);
+                                socket.close();
                             }
                         }
 
                     }
                 }
+
 if(socket.isConnected() && !socket.isClosed()) {
     lock.lock();
     try {
@@ -185,6 +194,8 @@ if(socket.isConnected() && !socket.isClosed()) {
         lock.unlock();
         waiter.interrupt();
     }
+    
+         socket.setSoTimeout(TIMEOUT);
 
 
     //START I PLAYERS
@@ -318,7 +329,7 @@ if(socket.isConnected() && !socket.isClosed()) {
 
                         synchronized (lockobj) {
                             if (!sendBoardStatus && id == sendBoardID) {
-                                sendBoardToActiveTCP(id + " BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
+                                sendBoardToActiveTCP("BOARD " + Arrays.deepToString(Board).replace(",", "").replace("[", "").replace("]", ""));
                                 sendBoardStatus = true;
                             }
                         }
@@ -327,7 +338,7 @@ if(socket.isConnected() && !socket.isClosed()) {
                                 inMsg = in.readLine();
                         } catch (SocketTimeoutException e) {
                             counterdisc++;
-                            if(counterdisc == 2000){
+                            if(counterdisc == 20000){
                                 timeoutKick(socket);
                                 phaser.arriveAndDeregister();
                                 break;
@@ -609,7 +620,7 @@ if(socket.isConnected() && !socket.isClosed()) {
                  if(socket.isConnected() && !socket.isClosed()) {
                      synchronized (lockobj) {
                          if (!sendRankingStatus) {
-                             System.out.println("MOJE ID TO " + id);
+                           //  System.out.println("MOJE ID TO " + id);
                              String ranking = getRanking();
                              sendMesageToAll(ranking);
                              sendMesageToAll("DISCONNECT");
@@ -618,7 +629,7 @@ if(socket.isConnected() && !socket.isClosed()) {
                          fileWriter.close();
                      }
                  }
-
+ 
             } catch (IOException e) {
                 e.printStackTrace();
             } finally {
@@ -672,7 +683,7 @@ if(socket.isConnected() && !socket.isClosed()) {
 
                         if (in.ready()) {
                             inMsg = in.readLine();
-                            outMsg = "ERROR FROM WAITER";
+                            outMsg = "ERROR";
                             fileWriter.println("FROM ID: " + clientSockets.get(socket) + " " + inMsg);
                             fileWriter.println("TO ID: " + clientSockets.get(socket) + " " + outMsg);
                             out.println(outMsg);
@@ -929,7 +940,18 @@ if(socket.isConnected() && !socket.isClosed()) {
             }
         }
     }
-
+/*               else if(inMsg.equals("CONNECT")){
+                    Thread.sleep(100);
+                    outMsg = "LOGIN s" + r.nextInt(4000);
+                    System.out.println("CLIENT: " + outMsg);
+                    out.println(outMsg);
+                }
+                else if(inMsg.startsWith("PLAYERS ")){
+                    Thread.sleep(100);
+                    outMsg = "BEGIN " + pickRandom('N', 'S', 'E', 'W');
+                    System.out.println("CLIENT: " + outMsg);
+                    out.println(outMsg);
+                }*/
 
     static void sendBoardToActiveTCP(String message) {
         for (Map.Entry<Integer, PrintWriter> entry: activePlayers.entrySet()) {
